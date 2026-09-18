@@ -943,6 +943,7 @@ summary .en{ font-size:.85em; margin-top:1px; font-weight:400; }
   <a href="#sec-violations">${bi("Blocked ASINs & Violations", "Blocked ASINs & Violations")}</a>
   <a href="#sec-ingredients">${bi("Verbotene Inhaltsstoffe", "Prohibited Ingredients")}</a>
   <a href="#sec-brands">${bi("Markenfreigaben (PD)", "Brand Approvals (PD)")}</a>
+  <a href="#sec-notes">${bi("Daten-Hinweise", "Data Notes")}</a>
 </div>
 
 <div class="group" id="sec-overview">
@@ -1138,6 +1139,14 @@ ${accountTable(
     .join("")
 ).replace("<table>", '<table class="brand-table">')}
 </div>
+</section>
+</div>
+
+<div class="group" id="sec-notes">
+<p class="group-title">${bi("Daten-Hinweise", "Data Notes")}</p>
+<section>
+<p class="legend">${bi("Jede Korrektur, Annahme oder Datenlücke in diesem Dashboard, zum Nachvollziehen.", "Every correction, assumption, or data gap in this dashboard, for traceability.")}</p>
+${notes.map((n) => `<p class="legend">${bi(n.de, n.en)}</p>`).join("\n")}
 </section>
 </div>
 
