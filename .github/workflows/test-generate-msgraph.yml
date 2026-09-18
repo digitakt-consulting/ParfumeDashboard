@@ -1,0 +1,28 @@
+name: Test generate.js against SharePoint (no push)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run generate.js (writes to dist/, does NOT commit or push)
+        run: node generate.js
+        env:
+          MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+
+      - name: Upload dist/index.html as a build artifact for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-preview
+          path: dist/index.html
+          retention-days: 7

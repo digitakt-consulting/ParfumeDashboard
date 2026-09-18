@@ -3,10 +3,30 @@
 // Re-run with `node generate.js` whenever new exports land in data/.
 const path = require("path");
 const fs = require("fs");
-const { loadWorkbook } = require("./lib/xlsx-lite");
+const { getAccessToken } = require("./lib/ms-auth");
+const { loadWorkbookFromShareLink } = require("./lib/msgraph-lite");
 
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = path.join(__dirname, "data"); // only "new-listings.csv" (optional local override) still reads from here
 const OUT_DIR = path.join(__dirname, "dist");
+
+// The one shared SharePoint workbook all sources now live in (colleagues
+// moved off ClickUp/Google Sheets weeks ago - see "Remove dead ClickUp
+// automation" commit). Confirmed via a full listWorksheetNames() call
+// (2026-09-18) that this file currently has exactly these 8 usable tabs -
+// "GPSR" (case log), "4. Blocked ASINs" and the GPSR Priority-1/2/3 sheets
+// do NOT exist in it, per Sophie Degn (2026-09-2x): those data points
+// simply aren't tracked anywhere right now, not hiding in another file.
+const SHARE_URL = "https://digitaktco-my.sharepoint.com/:x:/g/personal/zh_digitakt_co/IQBKluJ8RMXdRKmybCnHIALtAVOSdcbdI_Kq3nZ7But7-Rs";
+const REQUIRED_TABS = [
+  "1. Account Health Score",
+  "2. Account Violations",
+  "3. New Listings",
+  "Lilial",
+  "PD-New sumbission",
+  "PS-New submissions",
+  "PD-brand approvals",
+  "Numbers per week",
+];
 
 // ---------------------------------------------------------------- helpers --
 function cleanAsin(v) {
@@ -184,10 +204,49 @@ function bi(de, en) {
   return `${esc(de)}<span class="en">${esc(en)}</span>`;
 }
 
+// Everything from here on runs inside one async IIFE, because fetching the
+// workbook over Microsoft Graph is async - loadWorkbookFromShareLink() itself
+// still returns the same synchronous {listSheets,getSheet,getRows} interface
+// xlsx-lite.js's loadWorkbook() did, so nothing below this fetch needed to
+// change to work against it.
+(async () => {
+
+const msTenantId = process.env.MS_TENANT_ID;
+const msClientId = process.env.MS_CLIENT_ID;
+const msClientSecret = process.env.MS_CLIENT_SECRET;
+if (!msTenantId || !msClientId || !msClientSecret) {
+  console.error("Missing MS_TENANT_ID / MS_CLIENT_ID / MS_CLIENT_SECRET environment variables.");
+  process.exit(1);
+}
+const msToken = await getAccessToken(msTenantId, msClientId, msClientSecret);
+const rawWb = await loadWorkbookFromShareLink(SHARE_URL, msToken, REQUIRED_TABS);
+
+// Wraps a workbook so a missing tab returns an empty result instead of
+// throwing - lets every section below degrade to "no data" gracefully
+// instead of crashing the whole run when a tab doesn't exist in this file
+// (confirmed: "GPSR", "4. Blocked ASINs", the Priority-1/2/3 sheets don't).
+// `aliases` lets existing code that expects a fixed sheet name (e.g.
+// "Sheet1") read from this file's differently-named equivalent tab.
+function safeWorkbook(wb, aliases) {
+  const have = wb.listSheets();
+  const resolve = (name) => (aliases && aliases[name]) || name;
+  return {
+    listSheets: () => have,
+    getSheet: (name) => {
+      const n = resolve(name);
+      return have.includes(n) ? wb.getSheet(n) : {};
+    },
+    getRows: (name) => {
+      const n = resolve(name);
+      return have.includes(n) ? wb.getRows(n) : [];
+    },
+  };
+}
+
 // ============================================================================
 // 1) UEBERSICHTSTABELLE
 // ============================================================================
-const ueb = loadWorkbook(path.join(DATA_DIR, "uebersicht.xlsx"));
+const ueb = safeWorkbook(rawWb);
 
 // --- 3. New Listings ---------------------------------------------------
 // Prefer a CSV export of this one tab over the xlsx workbook's copy, if
@@ -389,7 +448,7 @@ note(
 // ============================================================================
 // 2) GPSR ISSUE WORKBOOK (Priority submissions + New submissions)
 // ============================================================================
-const gi = loadWorkbook(path.join(DATA_DIR, "gpsr-issue.xlsx"));
+const gi = ueb;
 
 // Priority sheets share a schema; "PD - Priority 1" has one extra leading
 // column vs the other five, shifting Revenue from col5 to col6 (verified).
@@ -489,7 +548,7 @@ for (const spec of NEW_SUB_SHEETS) {
 // ============================================================================
 // 3) GPSR GRAPH WORKBOOK — weekly trend (only the confidently-parseable block)
 // ============================================================================
-const gg = loadWorkbook(path.join(DATA_DIR, "gpsr-graph.xlsx"));
+const gg = ueb;
 const weeklyRaw = gg.getRows("Numbers per week").filter((r) => r.rowNum > 2 && (r[0] || "").trim());
 const weeklyTrend = weeklyRaw
   .map((r) => ({
@@ -535,7 +594,7 @@ note(
 // verified: only 1 of 431 IDs there isn't already in Sheet1, and its
 // Account/Title columns are numbers/blank instead of real values - so only
 // Sheet1 is read, same as the single-source CSV before.
-const pi = loadWorkbook(path.join(DATA_DIR, "prohibited-ingredients.xlsx"));
+const pi = safeWorkbook(rawWb, { Sheet1: "Lilial" });
 const piRows = pi.getRows("Sheet1").filter((r) => r.rowNum > 1); // row 1 is the header
 function normalizePiStatus(v) {
   const s = String(v || "").trim().toLowerCase();
@@ -636,14 +695,26 @@ function categorizeBrandStatus(raw) {
   }
   return { token: "neutral", label: v, labelEn: v };
 }
-const ba = loadWorkbook(path.join(DATA_DIR, "brand-approvals.xlsx"));
-const baHeaderRow = ba.getRows("Sheet1").find((r) => r.rowNum === 1) || [];
-// Market columns read from the header row itself (not a fixed list) - same
+// "PD-brand approvals" is not a clean single table: row 1 is a "Parfum
+// Direct" title, row 2 the real header, then PD data rows, then a blank
+// separator, then a second "Parfum Store" title+header+data block. Per the
+// client this section is Parfum-Direct-only (see note below), so only the
+// PD block is read - found by its header row's literal "Brand" text (same
 // header-based approach used for "4. Blocked ASINs" after that sheet's
-// column-drift incident, so a future reordering here won't silently
-// misalign brand names with the wrong marketplace.
+// column-drift incident) rather than a hardcoded row number, and stopped at
+// the first blank row or the next "Brand" header (the Parfum Store block).
+const baAllRows = ueb.getRows("PD-brand approvals");
+const baHeaderRow = baAllRows.find((r) => (r[0] || "").trim() === "Brand") || [];
 const BRAND_MARKETS = baHeaderRow.slice(1).map((h) => (h || "").trim()).filter(Boolean);
-const baDataRows = ba.getRows("Sheet1").filter((r) => r.rowNum > 1 && hasContent(r));
+const baDataRows = [];
+if (baHeaderRow.rowNum) {
+  for (const r of baAllRows) {
+    if (r.rowNum <= baHeaderRow.rowNum) continue;
+    if (!hasContent(r)) break; // blank separator row -> end of PD block
+    if ((r[0] || "").trim() === "Brand") break; // Parfum Store block's header -> stop
+    baDataRows.push(r);
+  }
+}
 const brandApprovals = baDataRows
   .filter((r) => (r[0] || "").trim())
   .map((r) => ({
@@ -1238,3 +1309,8 @@ console.log("Revenue total (fixed):", fmtEUR(totalRevenue), revenueByAccount);
 console.log("Prohibited ingredients:", totalProhibited, piByAccount);
 console.log("\n--- Notes ---");
 notes.forEach((n, i) => console.log(`${i + 1}. ${n.de}`));
+
+})().catch((err) => {
+  console.error(err.message || err);
+  process.exit(1);
+});
