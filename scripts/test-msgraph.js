@@ -8,7 +8,7 @@
 // same corruption pattern (stray numeric junk in text fields) already found
 // in this file's "2. Account Violations" and "1. Account Health Score" tabs.
 const { getAccessToken } = require("../lib/ms-auth");
-const { loadWorkbookFromShareLink } = require("../lib/msgraph-lite");
+const { loadWorkbookFromShareLink, listWorksheetNames } = require("../lib/msgraph-lite");
 
 const SHARE_URL = "https://digitaktco-my.sharepoint.com/:x:/g/personal/zh_digitakt_co/IQBKluJ8RMXdRKmybCnHIALtAVOSdcbdI_Kq3nZ7But7-Rs";
 
@@ -54,6 +54,13 @@ async function main() {
   console.log("Requesting access token...");
   const token = await getAccessToken(tenantId, clientId, clientSecret);
   console.log("Got token (length " + token.length + ").");
+
+  // Full worksheet listing first - ground truth for planning the generate.js
+  // rewrite (which tabs actually live in this one workbook vs. the previously
+  // separate GPSR-Issue/GPSR-Graph/Prohibited-Ingredients/Brand-Approvals files).
+  const allSheets = await listWorksheetNames(SHARE_URL, token);
+  console.log("\n=== Full worksheet list (" + allSheets.length + " tabs) ===");
+  console.log(JSON.stringify(allSheets, null, 2));
 
   const tabNames = ["3. New Listings", "Lilial", "PD-New sumbission", "PS-New submissions", "PD-brand approvals"];
   console.log("\nFetching tabs:", tabNames.join(" | "));
