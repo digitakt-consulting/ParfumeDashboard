@@ -368,8 +368,6 @@ note(
   `Of ${gpsrRawAll.filter((r) => r.rowNum > 2).length} physical rows in the GPSR tab, only ${gpsrCases.length} actually hold a case (Order Nr. filled in); ` +
   `${gpsrTemplateRowCount} are empty template rows and are deliberately NOT counted here as an "open case".`
 );
-const gpsrByFlag = countBy(gpsrCases, (x) => x.flag || "(kein Flag)");
-
 // Market coverage for the GPSR case log: restricted to DE per client request
 // (01.09.) - note this means the table below no longer sums to the "GPSR
 // cases (real order rows)" KPI card total further up (which still counts
@@ -1011,12 +1009,6 @@ ${accountTable(
     .join("")
 )}
 <p class="coverage-note">${bi("Für Märkte ohne Eintrag oben liegen in der GPSR-Fall-Tabelle keine Zeilen vor — das ist eine Lücke in der Datenerhebung, kein Beleg für weniger Beschwerden.", "For markets with no entry above, the GPSR case table has no rows — this is a gap in data collection, not evidence of fewer complaints.")}</p>
-</section>
-
-<section>
-<h2>${bi("GPSR-Fälle nach Ursache (Flag)", "GPSR cases by cause (flag)")}</h2>
-<p class="legend">${bi("Beschwerdegrund laut Amazon-Seller-Central-Case (siehe Datenabdeckung oben).", "Complaint reason per the Amazon Seller Central case (see data coverage above).")}</p>
-${barHtml(sortedEntries(gpsrByFlag).slice(0, 12), totalGpsrCases)}
 </section>
 
 <section>
