@@ -358,7 +358,7 @@ function headerIndex(headerRowArr, labels) {
   });
   return map;
 }
-const blockedHeaderRow = ueb.getRows("4. Blocked ASINs").find((r) => r.rowNum === 3);
+const blockedHeaderRow = ueb.getRows("4. Blocked ASINs").find((r) => r.rowNum === 3) || [];
 const blockedCol = headerIndex(blockedHeaderRow, ["Product", "Reason", "Stock", "Status"]);
 const blockedRows = ueb.getRows("4. Blocked ASINs").filter((r) => r.rowNum > 3 && hasContent(r));
 const blockedAsins = blockedRows.map((r) => ({
