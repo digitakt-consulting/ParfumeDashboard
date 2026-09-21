@@ -1,0 +1,60 @@
+name: Weekly dashboard refresh
+
+on:
+  schedule:
+    # 05:00 and 06:00 UTC on Mondays; the guard step below lets only the run
+    # that falls on 07:00 Berlin time (CEST or CET) continue.
+    - cron: "0 5 * * 1"
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-dashboard
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only run at 07:00 Berlin time (manual runs always continue)
+        id: guard
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$(TZ=Europe/Berlin date +%H)" = "07" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "Berlin time is not 07:00 - skipping this duplicate cron run."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.go == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.go == 'true'
+        with:
+          node-version: 20
+
+      - name: Generate dashboard from SharePoint
+        if: steps.guard.outputs.go == 'true'
+        run: node generate.js
+        env:
+          MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+
+      - name: Publish index.html if it changed
+        if: steps.guard.outputs.go == 'true'
+        run: |
+          cp dist/index.html index.html
+          if git diff --quiet -- index.html; then
+            echo "No changes - dashboard already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "chore: weekly dashboard refresh $(TZ=Europe/Berlin date +%F)"
+          git push
