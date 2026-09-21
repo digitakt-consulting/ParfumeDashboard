@@ -196,6 +196,8 @@ const SNAPSHOT_ISO = SNAPSHOT_NOW.toISOString().slice(0, 10);
 
 const notes = []; // data-quality notes collected while building, rendered at the bottom (internal only - not shown on the page)
 function note(de, en) { notes.push({ de, en }); }
+// Notes about data no longer read (GPSR case log, Blocked ASINs, Priority sheets, revenue, old CSV) would only confuse readers of the SharePoint-based dashboard.
+const OBSOLETE_NOTE_RE = /Blocked ASINs|„GPSR"\/|physischen Zeilen im GPSR|GPSR-Fälle nach Markt|Revenue-Summe|Priority-Sheets|Priority-Listen|separaten CSV/;
 // Inline bilingual label: German on the main line, English rendered smaller
 // underneath via CSS (.en). Used for every static UI string - headings,
 // legends, table headers, tags - never for raw data values (product names,
@@ -273,6 +275,13 @@ const newListings = nlRows.map((r) => ({
 const nlByAccount = countBy(newListings, (x) => x.account || "Nicht zuordenbar (Quelle unvollständig)");
 const nlByStatus = countBy(newListings, (x) => x.status || "(kein Status)");
 const nlDates = newListings.map((x) => x.date).filter(Boolean).sort();
+// Fail loudly instead of publishing silently wrong numbers: a Graph-side
+// column shift once left EVERY date unparsed (account/ASIN have whole-row
+// fallback scans, the date column doesn't) and the run still "succeeded".
+if (newListings.length > 50 && nlDates.length === 0) {
+  console.error(`ABBRUCH: ${newListings.length} Zeilen in "3. New Listings", aber kein einziges Datum erkannt - vermutlich Spaltenversatz in der Quelle. Es wird nichts geschrieben.`);
+  process.exit(1);
+}
 
 // The "Date" column does NOT track when a listing was newly created - it
 // clusters into a handful of distinct values with massive spikes on single
@@ -562,27 +571,40 @@ const weeklyTrend = weeklyRaw
     psNew: safeNumber(r[10]),
   }))
   .filter((w) => w.pdApproved !== null || w.pdSubmitted !== null || w.psApproved !== null || w.psSubmitted !== null);
+// "Anzahl offener Fälle" block (columns M-Q of the same tab): one "Start" row
+// and one "Aktuell" row per account, located by their label text rather than
+// fixed row numbers. Start equals the "GPSR products at the beginning" figure
+// (2400 / 500), so "Start - Aktuell" is what has been resolved so far.
+const gpsrOpen = {}; // account -> { start, now }
+for (const r of gg.getRows("Numbers per week")) {
+  const pdLabel = String(r[12] || "").trim().toLowerCase();
+  const psLabel = String(r[15] || "").trim().toLowerCase();
+  for (const [acc, label, val] of [["Parfum Direct", pdLabel, safeNumber(r[13])], ["Parfum Store", psLabel, safeNumber(r[16])]]) {
+    if (val === null) continue;
+    if (label === "start") (gpsrOpen[acc] = gpsrOpen[acc] || {}).start = val;
+    if (label === "aktuell") (gpsrOpen[acc] = gpsrOpen[acc] || {}).now = val;
+  }
+}
+const hasGpsrOpen = ["Parfum Direct", "Parfum Store"].every((a) => gpsrOpen[a] && gpsrOpen[a].start > 0 && gpsrOpen[a].now !== undefined);
+const gpsrOpenTotalNow = hasGpsrOpen ? gpsrOpen["Parfum Direct"].now + gpsrOpen["Parfum Store"].now : 0;
+const gpsrDonePct = (acc) => (hasGpsrOpen ? ((gpsrOpen[acc].start - gpsrOpen[acc].now) / gpsrOpen[acc].start) * 100 : null);
+// Latest weekly figures per account: the newest week that actually has a value
+// (future weeks are pre-filled with labels but no numbers yet).
+const lastWeekWith = (field) => [...weeklyTrend].reverse().find((w) => w[field] !== null && w[field] !== undefined) || null;
+const gpsrLatest = {
+  "Parfum Direct": { approved: lastWeekWith("pdApproved"), submitted: lastWeekWith("pdSubmitted"), added: lastWeekWith("pdNew") },
+  "Parfum Store": { approved: lastWeekWith("psApproved"), submitted: lastWeekWith("psSubmitted"), added: lastWeekWith("psNew") },
+};
 note(
-  `„Numbers per week" enthält rechts von der Wochentabelle weitere, uneindeutig ausgerichtete Mini-Tabellen (u. a. tägliche „Anzahl offener Fälle") — ` +
-  `diese wurden NICHT übernommen, da die Spaltenausrichtung ohne Rückfrage beim Original-Ersteller nicht zuverlässig rekonstruierbar war. ` +
-  `Nur der eindeutige Wochenblock (Approved/Submitted/New GPSR SKUs je Account) ist im Trend enthalten (${weeklyTrend.length} Wochen insgesamt).`,
-  `"Numbers per week" contains further, ambiguously-aligned mini-tables to the right of the weekly table (among others a daily "number of open cases") — ` +
-  `these were NOT included, since the column alignment could not be reliably reconstructed without asking the original author. ` +
-  `Only the unambiguous weekly block (Approved/Submitted/New GPSR SKUs per account) is included in the trend (${weeklyTrend.length} weeks total).`
+  `GPSR-Zahlen kommen ausschließlich aus dem wöchentlich gepflegten Tab „Numbers per week": Wochenverlauf Approved/Submitted/Neue GPSR-Produkte (${weeklyTrend.length} Wochen) und der Block „Anzahl offener Fälle" (Start → Aktuell je Account). ` +
+  `Der rechts danebenliegende Tagesblock (Spalten „Week / Day / Parfum Direct / Parfum Store") wurde nicht übernommen: seine Einheit ist nicht beschriftet und die Tageswerte sind in der Quelle teils in falsche Datumswerte umgewandelt.`,
+  `GPSR figures come exclusively from the weekly-maintained "Numbers per week" tab: weekly Approved/Submitted/New GPSR products (${weeklyTrend.length} weeks) and the "open cases" block (start → current per account). ` +
+  `The daily block next to it (columns "Week / Day / Parfum Direct / Parfum Store") was not included: its unit is not labelled and some daily values were converted into wrong date values in the source.`
 );
-// Chart shows roughly the last 2 months. The sheet has no per-period exact
-// date, only "YYYY.MM.<sub-period>" labels with an uneven number of
-// sub-periods per month (I-V seen) - a strict calendar-month filter left as
-// few as 4 points right after a month boundary, too thin for a line chart.
-// Taking the last 8 rows (this data's actual weekly-ish cadence) gives a
-// consistently readable ~2-month window regardless of where in the month
-// the snapshot falls.
-const WEEKLY_TREND_RECENT_COUNT = 8;
-const weeklyTrendRecent = weeklyTrend.slice(-WEEKLY_TREND_RECENT_COUNT);
-note(
-  `Der Trend-Graph zeigt die letzten ${weeklyTrendRecent.length} von ${weeklyTrend.length} Wochen (≈ 2 Monate bei der Wochentaktung dieser Tabelle) — die komplette Historie steht weiterhin in der einklappbaren Detailtabelle darunter.`,
-  `The trend chart shows the last ${weeklyTrendRecent.length} of ${weeklyTrend.length} weeks (≈ 2 months at this table's weekly cadence) — the full history is still available in the collapsible detail table below.`
-);
+// The chart shows the whole recorded history (the sheet starts in 2026.04),
+// not just the last weeks. The sheet has no per-period exact date, only
+// "YYYY.MM.<sub-period>" labels, so points are plotted by row order.
+const weeklyTrendRecent = weeklyTrend;
 
 // ============================================================================
 // 4) PROHIBITED INGREDIENTS (Lilial/Lyral) — now delivered as XLSX, not CSV
@@ -1005,13 +1027,13 @@ summary .en{ font-size:.85em; margin-top:1px; font-weight:400; }
   <span class="stand-chip" id="standChip">${bi(`Stand: ${SNAPSHOT_ISO}`, `As of: ${SNAPSHOT_ISO}`)}</span>
 </header>
 <p class="sub">${bi(
-  `Generiert aus Übersichtstabelle, GPSR-Issue-Workbook, GPSR-Graph-Workbook, der Prohibited-Ingredients-Liste und der Markenfreigaben-Liste. Alle Zeitfenster (7–90 Tage) rechnen relativ zum eingefrorenen Stand oben, nicht zur Uhrzeit beim Betrachten.`,
-  `Generated from the overview workbook, the GPSR issue workbook, the GPSR graph workbook, the prohibited-ingredients list, and the brand approvals list. All time windows (7–90 days) are calculated relative to the frozen snapshot date above, not to the time you're viewing the page.`
+  `Generiert aus der wöchentlich gepflegten Datei Recent_ExcelListSummarized.xlsx (SharePoint). Alle Zeitfenster (7–90 Tage) rechnen relativ zum eingefrorenen Stand oben, nicht zur Uhrzeit beim Betrachten.`,
+  `Generated from the weekly-maintained file Recent_ExcelListSummarized.xlsx (SharePoint). All time windows (7–90 days) are calculated relative to the frozen snapshot date above, not to the time you're viewing the page.`
 )}</p>
 <div class="jumpnav">
   <a href="#sec-overview">${bi("Überblick", "Overview")}</a>
   <a href="#sec-gpsr">${bi("GPSR-Compliance", "GPSR Compliance")}</a>
-  <a href="#sec-violations">${bi("Blocked ASINs & Violations", "Blocked ASINs & Violations")}</a>
+  <a href="#sec-violations">${bi("Account Violations", "Account Violations")}</a>
   <a href="#sec-ingredients">${bi("Verbotene Inhaltsstoffe", "Prohibited Ingredients")}</a>
   <a href="#sec-brands">${bi("Markenfreigaben (PD)", "Brand Approvals (PD)")}</a>
   <a href="#sec-notes">${bi("Daten-Hinweise", "Data Notes")}</a>
@@ -1021,7 +1043,7 @@ summary .en{ font-size:.85em; margin-top:1px; font-weight:400; }
 <p class="group-title">${bi("Überblick", "Overview")}</p>
 <section>
 <h2>${bi("Snapshot", "Snapshot")}</h2>
-<p class="legend">${bi("Die vier wichtigsten Zahlen auf einen Blick — Details und Herkunft in den Sektionen darunter.", "The four key numbers at a glance — details and source in the sections below.")}</p>
+<p class="legend">${bi("Die wichtigsten Zahlen auf einen Blick — Details und Herkunft in den Sektionen darunter.", "The key numbers at a glance — details and source in the sections below.")}</p>
 <div class="grid">
   <div class="card">
     <strong id="nlCount">${fmtInt(totalNewListingsRecent)}</strong>
@@ -1031,28 +1053,24 @@ summary .en{ font-size:.85em; margin-top:1px; font-weight:400; }
     <small id="nlBreakdown">${sortedEntries(nlRecentByAccount).map(([k, v]) => `${esc(k)}: ${fmtInt(v)}`).join(" · ") || "keine im Zeitraum / none in this period"} · ab / from ${nlCutoffISO}</small>
     <small>${bi(`Lifetime gesamt: ${fmtInt(totalNewListings)}${nlDaysSinceLatest !== null ? ` · Tracker zuletzt aktualisiert vor ${nlDaysSinceLatest} Tagen (${nlLatestDateISO})` : ""}`, `Lifetime total: ${fmtInt(totalNewListings)}${nlDaysSinceLatest !== null ? ` · tracker last updated ${nlDaysSinceLatest} days ago (${nlLatestDateISO})` : ""}`)}</small>
   </div>
-  <div class="card"><strong>${fmtInt(totalGpsrCases)}</strong><div class="lbl">${bi("GPSR-Fälle (echte Order-Zeilen)", "GPSR cases (real order rows)")}</div><small>${bi(`vs. ${fmtInt(gpsrTemplateRowCount)} leere Vorlagenzeilen ausgeschlossen · nur DE/ES/IT erfasst`, `vs. ${fmtInt(gpsrTemplateRowCount)} empty template rows excluded · only DE/ES/IT tracked`)}</small></div>
-  <div class="card"><strong>${fmtEUR(totalRevenue)}</strong><div class="lbl">${bi("Revenue (letzte 12 Monate, PD+PS)", "Revenue (last 12 months, PD+PS)")}</div><small>Parfum Direct: ${fmtEUR(revenueByAccount["Parfum Direct"].sum)} · Parfum Store: ${fmtEUR(revenueByAccount["Parfum Store"].sum)}</small></div>
+  ${hasGpsrOpen ? `<div class="card"><strong>${fmtInt(gpsrOpenTotalNow)}</strong><div class="lbl">${bi("Offene GPSR-Fälle aktuell", "Open GPSR cases now")}</div><small>Parfum Direct: ${fmtInt(gpsrOpen["Parfum Direct"].now)} · Parfum Store: ${fmtInt(gpsrOpen["Parfum Store"].now)}</small></div>` : ""}
   <div class="card"><strong>${fmtInt(totalProhibited)}</strong><div class="lbl">${bi("Verbotene Inhaltsstoffe (Lilial/Lyral)", "Prohibited ingredients (Lilial/Lyral)")}</div><small>${sortedEntries(piByAccount).map(([k, v]) => `${esc(k)}: ${fmtInt(v)}`).join(" · ")}</small></div>
 </div>
 </section>
 
 <section>
 <h2>${bi("Account-Übersicht", "Account Overview")}</h2>
-<p class="legend">${bi("Die vier wichtigsten Kennzahlen je Account — GPSR-Fälle, verbotene Inhaltsstoffe (Lilial), bearbeitete Listings und Umsatz.", "The four key metrics per account — GPSR cases, prohibited ingredients (Lilial), processed listings, and revenue.")}</p>
+<p class="legend">${bi("Die wichtigsten Kennzahlen je Account — offene GPSR-Fälle, verbotene Inhaltsstoffe (Lilial) und bearbeitete Listings.", "The key metrics per account — open GPSR cases, prohibited ingredients (Lilial), and processed listings.")}</p>
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));">
 ${["Parfum Direct", "Parfum Store"]
   .map((acc) => {
-    const gpsrN = gpsrCases.filter((c) => c.account === acc).length;
     return `<div class="card acc-card ${accentClass(acc)}">
       <div class="acc-card-head"><span class="badge ${acc === "Parfum Direct" ? "pd" : "ps"}">${esc(acc)}</span></div>
       <div class="acc-stat-grid">
-        <div><strong>${fmtInt(gpsrN)}</strong><div class="lbl">${bi("GPSR-Fälle", "GPSR cases")}</div></div>
+        ${hasGpsrOpen ? `<div><strong>${fmtInt(gpsrOpen[acc].now)}</strong><div class="lbl">${bi("Offene GPSR-Fälle", "Open GPSR cases")}</div></div>` : ""}
         <div><strong>${fmtInt(piByAccount[acc] || 0)}</strong><div class="lbl">${bi("Verbotene Inhaltsstoffe (Lilial)", "Prohibited ingredients (Lilial)")}</div></div>
         <div><strong data-nl-account="${esc(acc)}">${fmtInt(nlRecentByAccount[acc] || 0)}</strong><div class="lbl">${bi(`Bearb. Listings (${NL_RECENT_DAYS}d)`, `Processed listings (${NL_RECENT_DAYS}d)`)}</div></div>
-        <div><strong>${fmtEUR(revenueByAccount[acc].sum)}</strong><div class="lbl">${bi("Revenue (12M)", "Revenue (12M)")}</div></div>
       </div>
-      <small>${bi(`Produkte mit Umsatz: ${fmtInt(productsWithRevenueByAccount[acc] || 0)}`, `Products with revenue: ${fmtInt(productsWithRevenueByAccount[acc] || 0)}`)}</small>
     </div>`;
   })
   .join("")}
@@ -1068,35 +1086,31 @@ ${["Parfum Direct", "Parfum Store"]
 <div id="nlStatusBars">${segBarHtml(sortedEntries(nlByStatusRecent), totalNewListingsRecent)}</div>
 </section>
 
-<section>
-<h2>${bi("GPSR-Fälle nach Markt — Datenabdeckung", "GPSR cases by market — data coverage")}</h2>
-<p class="legend">${bi(`Zeigt, für welche Märkte überhaupt Fälle in dieser Quelle erfasst werden — „–" bedeutet Datenlücke, nicht „keine Beschwerden".`, `Shows which markets have cases tracked in this source at all — "–" means a data gap, not "no complaints".`)}</p>
-${accountTable(
-  [["Markt", "Market"], ["Fälle", "Cases"], ["Status", "Status"]],
-  gpsrMarketCoverage
-    .map(
-      (m) =>
-        `<tr><td>${esc(m.market)}</td><td>${m.tracked ? fmtInt(m.cases) : "–"}</td><td>${m.tracked ? `<span class="tag tracked">${bi("erfasst", "tracked")}</span>` : `<span class="tag gap">${bi("keine Daten in dieser Quelle", "no data in this source")}</span>`}</td></tr>`
-    )
-    .join("")
-)}
-<p class="coverage-note">${bi("Für Märkte ohne Eintrag oben liegen in der GPSR-Fall-Tabelle keine Zeilen vor — das ist eine Lücke in der Datenerhebung, kein Beleg für weniger Beschwerden.", "For markets with no entry above, the GPSR case table has no rows — this is a gap in data collection, not evidence of fewer complaints.")}</p>
-</section>
-
-<section>
-<h2>${bi("GPSR-Priority-Einreichungen — Status", "GPSR priority submissions — status")}</h2>
+${hasGpsrOpen ? `<section>
+<h2>${bi("GPSR-Stand — offene Fälle", "GPSR status — open cases")}</h2>
 <p class="legend">${bi(
-  `Bearbeitungsstand der bei Amazon eingereichten GPSR-Fälle (Priority-Listen), beide Accounts zusammen. „Approved" = Details eingereicht und von Amazon bereits genehmigt. „Submitted" = Details eingereicht, aber von Amazon noch nicht genehmigt oder abgelehnt.`,
-  `Processing status of GPSR cases submitted to Amazon (priority lists), both accounts combined. "Approved" = details submitted and already approved by Amazon. "Submitted" = details submitted, but not yet approved or declined by Amazon.`
+  `Anzahl offener GPSR-Fälle je Account: Start der Aufarbeitung im Vergleich zum aktuellen Stand (wöchentlich gepflegt in „Numbers per week").`,
+  `Number of open GPSR cases per account: at the start of the clean-up versus the current status (updated weekly in "Numbers per week").`
 )}</p>
-${segBarHtml(sortedEntries(submissionStatusCounts), totalPriorityEntries)}
-</section>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));">
+${["Parfum Direct", "Parfum Store"].map((acc) => `<div class="card acc-card ${accentClass(acc)}">
+  <div class="acc-card-head"><span class="badge ${acc === "Parfum Direct" ? "pd" : "ps"}">${esc(acc)}</span></div>
+  <div class="acc-stat-grid">
+    <div><strong>${fmtInt(gpsrOpen[acc].now)}</strong><div class="lbl">${bi("Offen aktuell", "Open now")}</div></div>
+    <div><strong>${fmtInt(gpsrOpen[acc].start)}</strong><div class="lbl">${bi("Offen zu Beginn", "Open at start")}</div></div>
+    <div><strong>${fmtInt(gpsrLatest[acc].approved ? gpsrLatest[acc].approved[acc === "Parfum Direct" ? "pdApproved" : "psApproved"] : null)}</strong><div class="lbl">${bi("Approved SKUs", "Approved SKUs")}${gpsrLatest[acc].approved ? ` (${esc(gpsrLatest[acc].approved.period)})` : ""}</div></div>
+    <div><strong>${fmtInt(gpsrLatest[acc].submitted ? gpsrLatest[acc].submitted[acc === "Parfum Direct" ? "pdSubmitted" : "psSubmitted"] : null)}</strong><div class="lbl">${bi("Submitted SKUs", "Submitted SKUs")}${gpsrLatest[acc].submitted ? ` (${esc(gpsrLatest[acc].submitted.period)})` : ""}</div></div>
+  </div>
+  <small>${bi(`Seit Beginn abgearbeitet: ${fmtInt(gpsrOpen[acc].start - gpsrOpen[acc].now)} (${gpsrDonePct(acc).toFixed(0)} %)`, `Resolved since start: ${fmtInt(gpsrOpen[acc].start - gpsrOpen[acc].now)} (${gpsrDonePct(acc).toFixed(0)}%)`)}</small>
+</div>`).join("")}
+</div>
+</section>` : ""}
 
 <section>
 <h2>${bi("Wöchentlicher GPSR-Trend", "Weekly GPSR trend")}</h2>
 <p class="legend">${bi(
-  `Approved- vs. Submitted-Verlauf der letzten 2 Monate, getrennt nach Account — Punkte zeigen den genauen Wert beim Überfahren mit der Maus. „Approved" = Details eingereicht und von Amazon bereits genehmigt. „Submitted" = Details eingereicht, aber von Amazon noch nicht genehmigt oder abgelehnt.`,
-  `Approved vs. Submitted trend for the last 2 months, split by account — hover over a point to see its exact value. "Approved" = details submitted and already approved by Amazon. "Submitted" = details submitted, but not yet approved or declined by Amazon.`
+  `Approved- vs. Submitted-Verlauf über alle erfassten Wochen, getrennt nach Account — Punkte zeigen den genauen Wert beim Überfahren mit der Maus. „Approved" = Details eingereicht und von Amazon bereits genehmigt. „Submitted" = Details eingereicht, aber von Amazon noch nicht genehmigt oder abgelehnt.`,
+  `Approved vs. Submitted trend over all recorded weeks, split by account — hover over a point to see its exact value. "Approved" = details submitted and already approved by Amazon. "Submitted" = details submitted, but not yet approved or declined by Amazon.`
 )}</p>
 <h3>Parfum Direct</h3>
 ${lineChartSvg(
@@ -1138,14 +1152,14 @@ ${accountTable(
 </div>
 
 <div class="group" id="sec-violations">
-<p class="group-title">${bi("Blocked ASINs & Violations", "Blocked ASINs & Violations")}</p>
-<section>
+<p class="group-title">${bi("Account Violations", "Account Violations")}</p>
+${blockedAsins.length > 0 ? `<section>
 <h2>${bi("Blocked ASINs — Status", "Blocked ASINs — status")}</h2>
 <p class="legend">${bi("Aktueller Bearbeitungsstand blockierter Listings, beide Accounts zusammen.", "Current processing status of blocked listings, both accounts combined.")}</p>
 ${segBarHtml(sortedEntries(blockedByStatus), blockedAsins.length)}
 <h3>${bi("Top-Gründe", "Top reasons")}</h3>
 ${barHtml(sortedEntries(blockedByReason).slice(0, 10), blockedAsins.length)}
-</section>
+</section>` : ""}
 
 <section>
 <h2>${bi("Account Violations", "Account Violations")}</h2>
@@ -1217,13 +1231,13 @@ ${accountTable(
 <p class="group-title">${bi("Daten-Hinweise", "Data Notes")}</p>
 <section>
 <p class="legend">${bi("Jede Korrektur, Annahme oder Datenlücke in diesem Dashboard, zum Nachvollziehen.", "Every correction, assumption, or data gap in this dashboard, for traceability.")}</p>
-${notes.map((n) => `<p class="legend">${bi(n.de, n.en)}</p>`).join("\n")}
+${notes.filter((n) => !OBSOLETE_NOTE_RE.test(n.de)).map((n) => `<p class="legend">${bi(n.de, n.en)}</p>`).join("\n")}
 </section>
 </div>
 
 <footer>${bi(
-  `Generiert von generate.js — Stand ${SNAPSHOT_ISO} — Quellen: Übersichtstabelle.xlsx, Parfum Direct products with GPSR issue.xlsx, GPSR Graph.xlsx, List of ASINs containing prohibited ingredients.xlsx, Status of brand approvals.xlsx`,
-  `Generated by generate.js — as of ${SNAPSHOT_ISO} — sources: Übersichtstabelle.xlsx, Parfum Direct products with GPSR issue.xlsx, GPSR Graph.xlsx, List of ASINs containing prohibited ingredients.xlsx, Status of brand approvals.xlsx`
+  `Generiert von generate.js — Stand ${SNAPSHOT_ISO} — Quelle: Recent_ExcelListSummarized.xlsx (SharePoint, wöchentlich gepflegt)`,
+  `Generated by generate.js — as of ${SNAPSHOT_ISO} — source: Recent_ExcelListSummarized.xlsx (SharePoint, updated weekly)`
 )}</footer>
 </div>
 <script>
