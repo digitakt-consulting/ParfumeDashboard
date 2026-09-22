@@ -406,6 +406,7 @@ const violations = violationRows.map((r) => ({
 }));
 const violationsByStatus = countBy(violations, (x) => x.status || "(kein Status)");
 const violationsByType = countBy(violations, (x) => x.type || "(kein Typ)");
+const violationsByAccount = countBy(violations, (x) => x.account || "(kein Account)");
 
 // --- GPSR complaints (canonical source; "Lilial" and "GPSR-Graph" tabs in ---
 // --- this workbook are byte-identical duplicates of "GPSR" - verified ------
@@ -717,48 +718,63 @@ function categorizeBrandStatus(raw) {
   }
   return { token: "neutral", label: v, labelEn: v };
 }
-// "PD-brand approvals" is not a clean single table: row 1 is a "Parfum
-// Direct" title, row 2 the real header, then PD data rows, then a blank
-// separator, then a second "Parfum Store" title+header+data block. Per the
-// client this section is Parfum-Direct-only (see note below), so only the
-// PD block is read - found by its header row's literal "Brand" text (same
-// header-based approach used for "4. Blocked ASINs" after that sheet's
-// column-drift incident) rather than a hardcoded row number, and stopped at
-// the first blank row or the next "Brand" header (the Parfum Store block).
+// "PD-brand approvals" stacks one block per account in the same tab: a
+// one-cell "Parfum Direct"/"Parfum Store" title row, a "Brand" header row,
+// then data rows, separated by a blank row. Previously documented (and
+// shown) as Parfum-Direct-only - that was wrong: per the client (22.09.),
+// Parfum Store's approvals live further down in the same tab. Parsed
+// generically - any number of stacked "Brand"-header blocks, not just these
+// two - via header-based detection (same approach already used for "4.
+// Blocked ASINs" after that sheet's column-drift incident), so a future
+// re-ordering or a third block still works without a code change.
 const baAllRows = ueb.getRows("PD-brand approvals");
-const baHeaderRow = baAllRows.find((r) => (r[0] || "").trim() === "Brand") || [];
-const BRAND_MARKETS = baHeaderRow.slice(1).map((h) => (h || "").trim()).filter(Boolean);
-const baDataRows = [];
-if (baHeaderRow.rowNum) {
+const baHeaderRows = baAllRows.filter((r) => (r[0] || "").trim() === "Brand");
+const brandBlocks = baHeaderRows.map((headerRow, blockIdx) => {
+  // Account = nearest row above this header with content in column 0.
+  let account = null;
   for (const r of baAllRows) {
-    if (r.rowNum <= baHeaderRow.rowNum) continue;
-    if (!hasContent(r)) break; // blank separator row -> end of PD block
-    if ((r[0] || "").trim() === "Brand") break; // Parfum Store block's header -> stop
-    baDataRows.push(r);
+    if (r.rowNum >= headerRow.rowNum) break;
+    if ((r[0] || "").trim()) account = normalizeAccount(r[0]) || account;
   }
-}
-const brandApprovals = baDataRows
-  .filter((r) => (r[0] || "").trim())
-  .map((r) => ({
-    brand: r[0].trim(),
-    cells: BRAND_MARKETS.map((mkt, i) => ({ market: mkt, raw: (r[i + 1] || "").toString(), ...categorizeBrandStatus(r[i + 1]) })),
-  }));
-const allBaCells = brandApprovals.flatMap((b) => b.cells).filter((c) => c.raw.trim() !== "");
-const baCategoryMap = new Map();
-for (const c of allBaCells) {
-  if (!baCategoryMap.has(c.label)) baCategoryMap.set(c.label, { label: c.label, labelEn: c.labelEn, token: c.token, count: 0 });
-  baCategoryMap.get(c.label).count++;
-}
-const baCategoryEntries = [...baCategoryMap.values()].sort((a, b) => b.count - a.count);
-const baJunkCount = allBaCells.filter((c) => looksNumericJunk(c.raw)).length;
+  if (!account) account = blockIdx === 0 ? "Parfum Direct" : "Parfum Store"; // positional fallback if the title row's text doesn't parse as an account
+  const markets = headerRow.slice(1).map((h) => (h || "").trim()).filter(Boolean);
+  const rows = [];
+  for (const r of baAllRows) {
+    if (r.rowNum <= headerRow.rowNum) continue;
+    if (!hasContent(r)) break; // blank separator row -> end of this block
+    if ((r[0] || "").trim() === "Brand") break; // next block's header -> stop
+    rows.push(r);
+  }
+  const brands = rows
+    .filter((r) => (r[0] || "").trim())
+    .map((r) => ({
+      brand: r[0].trim(),
+      cells: markets.map((mkt, i) => ({ market: mkt, raw: (r[i + 1] || "").toString(), ...categorizeBrandStatus(r[i + 1]) })),
+    }));
+  const allCells = brands.flatMap((b) => b.cells).filter((c) => c.raw.trim() !== "");
+  const categoryMap = new Map();
+  for (const c of allCells) {
+    if (!categoryMap.has(c.label)) categoryMap.set(c.label, { label: c.label, labelEn: c.labelEn, token: c.token, count: 0 });
+    categoryMap.get(c.label).count++;
+  }
+  return {
+    account,
+    markets,
+    brands,
+    allCells,
+    categoryEntries: [...categoryMap.values()].sort((a, b) => b.count - a.count),
+    junkCount: allCells.filter((c) => looksNumericJunk(c.raw)).length,
+  };
+});
+const totalBaJunkCount = brandBlocks.reduce((sum, b) => sum + b.junkCount, 0);
 note(
-  `„Status of brand approvals" ist eine neue Quelle (Marke × Marktplatz-Freigabestatus) und gilt laut Kunde ausschließlich für Parfum Direct — ohne Datumsspalte wird sie deshalb als eigener, aber Parfum-Direct-gekennzeichneter Überblick dargestellt statt in eine bestehende Sektion eingerechnet.`,
-  `"Status of brand approvals" is a new source (brand × marketplace approval status) that, per the client, applies exclusively to Parfum Direct — with no date column, it's shown as its own section but labelled/styled as Parfum-Direct-scoped rather than folded into an existing section.`
+  `„Status of brand approvals" enthält beide Accounts im selben Tab (Parfum Direct + Parfum Store als zwei untereinander liegende Blöcke) — hier stand bisher fälschlich, die Quelle gelte nur für Parfum Direct. Laut Kunde (22.09.) sind beide Blöcke enthalten und werden jetzt getrennt angezeigt. Weiterhin keine Datumsspalte in der Quelle.`,
+  `"Status of brand approvals" contains both accounts in the same tab (Parfum Direct + Parfum Store as two stacked blocks) — this previously and incorrectly stated the source was Parfum-Direct-only. Per the client (22 Sep), both blocks are present and are now shown separately. Still no date column in the source.`
 );
-if (baJunkCount > 0) {
+if (totalBaJunkCount > 0) {
   note(
-    `${baJunkCount} Zelle(n) in „Status of brand approvals" enthielten eine reine Zahl statt eines Freigabe-Status (z. B. „12", „14") — vermutlich ein Dateneingabefehler in der Quelle, wie schon bei früheren Status-Spalten in diesem Dashboard. Als „Dateneintrag unklar" statt als Fantasie-Status gezählt.`,
-    `${baJunkCount} cell(s) in "Status of brand approvals" contained a plain number instead of an approval status (e.g. "12", "14") — likely a data-entry error in the source, the same pattern seen in earlier status columns in this dashboard. Counted as "Unclear data entry" instead of a made-up status.`
+    `${totalBaJunkCount} Zelle(n) in „Status of brand approvals" (beide Accounts zusammen) enthielten eine reine Zahl statt eines Freigabe-Status (z. B. „12", „14") — vermutlich ein Dateneingabefehler in der Quelle, wie schon bei früheren Status-Spalten in diesem Dashboard. Als „Dateneintrag unklar" statt als Fantasie-Status gezählt.`,
+    `${totalBaJunkCount} cell(s) in "Status of brand approvals" (both accounts combined) contained a plain number instead of an approval status (e.g. "12", "14") — likely a data-entry error in the source, the same pattern seen in earlier status columns in this dashboard. Counted as "Unclear data entry" instead of a made-up status.`
   );
 }
 
@@ -1035,7 +1051,7 @@ summary .en{ font-size:.85em; margin-top:1px; font-weight:400; }
   <a href="#sec-gpsr">${bi("GPSR-Compliance", "GPSR Compliance")}</a>
   <a href="#sec-violations">${bi("Account Violations", "Account Violations")}</a>
   <a href="#sec-ingredients">${bi("Verbotene Inhaltsstoffe", "Prohibited Ingredients")}</a>
-  <a href="#sec-brands">${bi("Markenfreigaben (PD)", "Brand Approvals (PD)")}</a>
+  <a href="#sec-brands">${bi("Markenfreigaben", "Brand Approvals")}</a>
   <a href="#sec-notes">${bi("Daten-Hinweise", "Data Notes")}</a>
 </div>
 
@@ -1163,7 +1179,8 @@ ${barHtml(sortedEntries(blockedByReason).slice(0, 10), blockedAsins.length)}
 
 <section>
 <h2>${bi("Account Violations", "Account Violations")}</h2>
-<p class="legend">${bi("Verstöße gegen Amazon-Richtlinien nach Bearbeitungsstand und Typ.", "Violations of Amazon policy by processing status and type.")}</p>
+<p class="legend">${bi("Verstöße gegen Amazon-Richtlinien nach Bearbeitungsstand und Typ, beide Accounts zusammen.", "Violations of Amazon policy by processing status and type, both accounts combined.")}</p>
+<p class="legend">${bi("Nach Account", "By account")}: ${sortedEntries(violationsByAccount).map(([k, v]) => `${esc(k)}: ${fmtInt(v)}`).join(" · ") || "–"}</p>
 ${segBarHtml(sortedEntries(violationsByStatus), violations.length)}
 <h3>${bi("Nach Typ", "By type")}</h3>
 ${barHtml(sortedEntries(violationsByType).slice(0, 10), violations.length)}
@@ -1174,7 +1191,8 @@ ${barHtml(sortedEntries(violationsByType).slice(0, 10), violations.length)}
 <p class="group-title">${bi("Verbotene Inhaltsstoffe", "Prohibited Ingredients")}</p>
 <section>
 <h2>${bi("Verbotene Inhaltsstoffe (Lilial/Lyral)", "Prohibited ingredients (Lilial/Lyral)")}</h2>
-<p class="legend">${bi("ASINs mit gemeldetem Lilial-/Lyral-Gehalt — eigenständige Compliance-Liste, nicht Teil der GPSR-Fall-Tabelle oben.", "ASINs with reported Lilial/Lyral content — a standalone compliance list, not part of the GPSR case table above.")}</p>
+<p class="legend">${bi("ASINs mit gemeldetem Lilial-/Lyral-Gehalt, beide Accounts zusammen — eigenständige Compliance-Liste, nicht Teil der GPSR-Fall-Tabelle oben.", "ASINs with reported Lilial/Lyral content, both accounts combined — a standalone compliance list, not part of the GPSR case table above.")}</p>
+<p class="legend">${bi("Nach Account", "By account")}: ${sortedEntries(piByAccount).map(([k, v]) => `${esc(k)}: ${fmtInt(v)}`).join(" · ") || "–"}</p>
 <div class="grid">
   <div class="card"><strong>${fmtInt(totalProhibited)}</strong><div class="lbl">${bi("Einträge gesamt", "Total entries")}</div></div>
   <div class="card"><strong>${fmtInt(piAsins.size)}</strong><div class="lbl">${bi("Eindeutige ASINs", "Unique ASINs")}</div></div>
@@ -1200,21 +1218,23 @@ ${accountTable(
 
 <div class="group" id="sec-brands">
 <p class="group-title">${bi("Markenfreigaben", "Brand Approvals")}</p>
-<section class="acc-card acc-pd" style="padding-left:14px;">
-<h2>${bi("Markenfreigaben nach Marktplatz", "Brand approvals by marketplace")} <span class="badge pd">Parfum Direct</span></h2>
-<p class="legend">${bi("Gilt laut Kunde ausschließlich für Parfum Direct — keine Datumsspalte in der Quelle, deshalb als eigener Überblick statt in eine bestehende Sektion eingerechnet. Zellen zeigen den Originaltext beim Überfahren mit der Maus.", "Per the client, this applies exclusively to Parfum Direct — no date column in the source, so it's shown as its own overview rather than folded into an existing section. Hover a cell to see the original wording.")}</p>
+${brandBlocks
+  .map(
+    (blk) => `<section class="acc-card ${accentClass(blk.account)}" style="padding-left:14px;">
+<h2>${bi("Markenfreigaben nach Marktplatz", "Brand approvals by marketplace")} <span class="badge ${blk.account === "Parfum Direct" ? "pd" : "ps"}">${esc(blk.account)}</span></h2>
+<p class="legend">${bi("Keine Datumsspalte in der Quelle, deshalb als eigener Überblick statt in eine bestehende Sektion eingerechnet. Zellen zeigen den Originaltext beim Überfahren mit der Maus.", "No date column in the source, so it's shown as its own overview rather than folded into an existing section. Hover a cell to see the original wording.")}</p>
 <div class="grid">
-  <div class="card"><strong>${fmtInt(brandApprovals.length)}</strong><div class="lbl">${bi("Marken erfasst", "Brands tracked")}</div></div>
-  <div class="card"><strong>${fmtInt(BRAND_MARKETS.length)}</strong><div class="lbl">${bi("Marktplätze", "Marketplaces")}</div></div>
-  <div class="card"><strong>${fmtInt(allBaCells.length)}</strong><div class="lbl">${bi("Ausgefüllte Zellen gesamt", "Filled cells total")}</div></div>
+  <div class="card"><strong>${fmtInt(blk.brands.length)}</strong><div class="lbl">${bi("Marken erfasst", "Brands tracked")}</div></div>
+  <div class="card"><strong>${fmtInt(blk.markets.length)}</strong><div class="lbl">${bi("Marktplätze", "Marketplaces")}</div></div>
+  <div class="card"><strong>${fmtInt(blk.allCells.length)}</strong><div class="lbl">${bi("Ausgefüllte Zellen gesamt", "Filled cells total")}</div></div>
 </div>
 <h3>${bi("Verteilung über alle Zellen", "Breakdown across all cells")}</h3>
-${brandStatusBarHtml(baCategoryEntries, allBaCells.length)}
+${brandStatusBarHtml(blk.categoryEntries, blk.allCells.length)}
 <h3>${bi("Übersicht je Marke", "Overview by brand")}</h3>
 <div style="overflow-x:auto;">
 ${accountTable(
-  [["Marke", "Brand"], ...BRAND_MARKETS.map((m) => [m, m])],
-  brandApprovals
+  [["Marke", "Brand"], ...blk.markets.map((m) => [m, m])],
+  blk.brands
     .map(
       (b) =>
         `<tr><td>${esc(b.brand)}</td>${b.cells
@@ -1224,7 +1244,9 @@ ${accountTable(
     .join("")
 ).replace("<table>", '<table class="brand-table">')}
 </div>
-</section>
+</section>`
+  )
+  .join("")}
 </div>
 
 <div class="group" id="sec-notes">
