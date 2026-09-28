@@ -17,6 +17,23 @@ function looksNumericJunk(v) {
   return s !== "" && /^\d+(\.\d+)?$/.test(s);
 }
 
+// Prints every distinct value seen in one column, with a count each - used
+// to see the REAL status vocabulary in a tab (e.g. whether "rejected"/
+// "abgelehnt" already exists as data) instead of guessing from a handful of
+// sample rows.
+function distinctValues(wb, name, colIdx, label) {
+  const rows = wb.getRows(name);
+  const counts = new Map();
+  for (const r of rows) {
+    const v = (r[colIdx] || "").toString().trim();
+    if (!v) continue;
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  console.log(`\nDistinct values in "${name}" col ${colIdx} (${label}), ${sorted.length} distinct:`);
+  console.log(JSON.stringify(sorted));
+}
+
 function inspectTab(wb, name, textFieldIndexes, sampleCount) {
   const rows = wb.getRows(name);
   console.log(`\n=== "${name}" ===`);
@@ -62,7 +79,7 @@ async function main() {
   console.log("\n=== Full worksheet list (" + allSheets.length + " tabs) ===");
   console.log(JSON.stringify(allSheets, null, 2));
 
-  const tabNames = ["3. New Listings", "Lilial", "PD-New sumbission", "PS-New submissions", "PD-brand approvals"];
+  const tabNames = ["2. Account Violations", "3. New Listings", "Lilial", "PD-New sumbission", "PS-New submissions", "PD-brand approvals"];
   console.log("\nFetching tabs:", tabNames.join(" | "));
   const wb = await loadWorkbookFromShareLink(SHARE_URL, token, tabNames);
 
@@ -73,6 +90,16 @@ async function main() {
   inspectTab(wb, "PD-New sumbission", [0], 8); // Asin column
   inspectTab(wb, "PS-New submissions", [0], 8); // Asin column
   inspectTab(wb, "PD-brand approvals", [0], 12); // Brand column
+
+  // 2026-09-28: feasibility check for a client feature request (case-link
+  // deep links, affected-products drill-down, a "rejected" status bucket).
+  // Full raw rows (all columns, not just the few generate.js currently
+  // reads) plus the real status/comment vocabulary, so any new UI is built
+  // against what the source actually contains instead of assumptions.
+  inspectTab(wb, "2. Account Violations", [3, 4, 6], 10);
+  distinctValues(wb, "2. Account Violations", 9, "Status");
+  distinctValues(wb, "3. New Listings", 8, "Status");
+  distinctValues(wb, "PD-brand approvals", 1, "Approval status sample (UK col)");
 }
 
 main().catch((err) => {
