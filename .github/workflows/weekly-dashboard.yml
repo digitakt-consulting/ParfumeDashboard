@@ -2,8 +2,13 @@ name: Weekly dashboard refresh
 
 on:
   schedule:
-    # 05:00 and 06:00 UTC on Mondays; the guard step below lets only the run
-    # that falls on 07:00 Berlin time (CEST or CET) continue.
+    # Two attempts on Mondays, aimed at 07:00 and 08:00 Berlin time (roughly
+    # 05:00/06:00 UTC depending on DST). GitHub Actions schedules can fire
+    # minutes to hours late under load - on 2026-09-28 both attempts fired
+    # around 6 hours late - so this no longer relies on firing at a precise
+    # time. Whichever attempt actually runs first does the refresh; the
+    # "already refreshed today" guard below makes the other one a no-op
+    # instead of a duplicate or a silent skip.
     - cron: "0 5 * * 1"
     - cron: "0 6 * * 1"
   workflow_dispatch: {}
@@ -19,18 +24,23 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - name: Only run at 07:00 Berlin time (manual runs always continue)
+      - uses: actions/checkout@v4
+
+      - name: Skip if already refreshed today (scheduled runs only)
         id: guard
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$(TZ=Europe/Berlin date +%H)" = "07" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "go=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "go=false" >> "$GITHUB_OUTPUT"
-            echo "Berlin time is not 07:00 - skipping this duplicate cron run."
+            exit 0
           fi
-
-      - uses: actions/checkout@v4
-        if: steps.guard.outputs.go == 'true'
+          today="$(TZ=Europe/Berlin date +%F)"
+          last_msg="$(git log -1 --format=%s)"
+          if [ "$last_msg" = "chore: weekly dashboard refresh $today" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "Already refreshed today ($today, commit: $last_msg) - skipping this duplicate scheduled run."
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-node@v4
         if: steps.guard.outputs.go == 'true'
