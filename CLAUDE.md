@@ -20,7 +20,9 @@ GitHub repo secrets: `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`. Never p
 
 GPSR status + weekly trend (tab "Numbers per week": weekly block + "Anzahl offener Fälle" Start/Aktuell block), processed listings ("3. New Listings"), Account Violations, prohibited ingredients ("Lilial"), brand approvals PD ("PD-brand approvals"). The Blocked ASINs section appears only if "4. Blocked ASINs" has data.
 
-Deliberately removed (not in the SharePoint file): revenue, GPSR case log by market, priority status. The daily block in "Numbers per week" (Week/Day/PD/PS) is not read — unit unclear, values partly converted to dates.
+Added 2026-10-08 (customer feedback): case-link buttons + affected-product tables for Account Violations / Processed Listings (columns: Violations comment=col 10, case link=col 11; New Listings comment=col 9, case link=col 10), section "Blockierte Listings" (status `blocked`), GPSR submission status per account from "PD-New sumbission" / "PS-New submissions".
+
+Deliberately removed (not in the SharePoint file): revenue, GPSR case log by market, priority-sheet status. The daily block in "Numbers per week" (Week/Day/PD/PS) is not read — unit unclear, values partly converted to dates.
 
 ## Gotchas / Stolperfallen
 

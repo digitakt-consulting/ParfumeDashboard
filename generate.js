@@ -140,6 +140,12 @@ function parseCsvSemicolon(text) {
     return arr;
   });
 }
+// Only real http(s) URLs count as a case link - the "AMZ Case Link" columns
+// sometimes hold free text or "-" instead of a URL.
+function cleanUrl(v) {
+  const s = (v || "").toString().trim();
+  return /^https?:\/\/\S+$/i.test(s) ? s : null;
+}
 function hasContent(rowArr) {
   return rowArr.some((v) => String(v == null ? "" : v).trim() !== "");
 }
@@ -271,6 +277,8 @@ const newListings = nlRows.map((r) => ({
   asin: cleanAsin(r[6]) || cleanAsin(r[14]) || scanForAsin(r), // sheet has two ASIN columns (F + O) depending on the row
   product: r[7] || null,
   status: (r[8] || "").trim() || null,
+  comment: (r[9] || "").trim() || null,
+  caseLink: cleanUrl(r[10]),
 }));
 const nlByAccount = countBy(newListings, (x) => x.account || "Nicht zuordenbar (Quelle unvollständig)");
 const nlByStatus = countBy(newListings, (x) => x.status || "(kein Status)");
@@ -403,6 +411,8 @@ const violations = violationRows.map((r) => ({
   asin: cleanAsin(r[6]) || scanForAsin(r),
   product: r[7] || null,
   status: (r[9] || "").trim() || null,
+  comment: (r[10] || "").trim() || null,
+  caseLink: cleanUrl(r[11]),
 }));
 const violationsByStatus = countBy(violations, (x) => x.status || "(kein Status)");
 const violationsByType = countBy(violations, (x) => x.type || "(kein Typ)");
@@ -841,6 +851,39 @@ function brandStatusBarHtml(entries, total) {
     .join("");
   return `<div class="seg-bar">${segs}</div><div class="seg-legend">${legend}</div>`;
 }
+// "In Seller Central öffnen" button when the source row carries a case link,
+// otherwise an explicit "no link" marker (never an empty cell that could be
+// mistaken for a rendering bug).
+function caseLinkHtml(url) {
+  if (!url) return `<span style="color:var(--ink-faint);">${bi("kein Link hinterlegt", "no link on file")}</span>`;
+  return `<a class="case-btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${bi("In Seller Central öffnen", "Open in Seller Central")}</a>`;
+}
+function accountBadgeHtml(account) {
+  if (account === "Parfum Direct") return `<span class="badge pd">Parfum Direct</span>`;
+  if (account === "Parfum Store") return `<span class="badge ps">Parfum Store</span>`;
+  return `<span class="badge" style="background:var(--neutral-soft); color:var(--neutral);">${esc(account || "–")}</span>`;
+}
+const STATUS_ORDER = { blocked: 0, open: 1, "in progress": 2, done: 3 };
+function byStatusThenDate(a, b) {
+  const sa = STATUS_ORDER[(a.status || "").toLowerCase()] ?? 4;
+  const sb = STATUS_ORDER[(b.status || "").toLowerCase()] ?? 4;
+  if (sa !== sb) return sa - sb;
+  return (b.date || "").localeCompare(a.date || "");
+}
+// Affected-products table for one area. `cols` picks the optional "type" column
+// (violations only); the comment is clipped for readability, full text on hover.
+function productTableHtml(items, { withType }) {
+  const headers = [["Account", "Account"], ["Land", "Country"], ["Datum", "Date"], ["ASIN", "ASIN"], ["Produkt", "Product"]];
+  if (withType) headers.push(["Typ", "Type"]);
+  headers.push(["Status", "Status"], ["Kommentar", "Comment"], ["Seller Central", "Seller Central"]);
+  const rows = items
+    .map((x) => {
+      const comment = x.comment || "";
+      return `<tr class="${accentClass(x.account)}"><td>${accountBadgeHtml(x.account)}</td><td>${esc(x.country || "–")}</td><td>${esc(x.date || "–")}</td><td>${esc(x.asin || "–")}</td><td>${esc((x.product || "–").slice(0, 70))}</td>${withType ? `<td>${esc((x.type || "–").slice(0, 60))}</td>` : ""}<td><span class="tag t-${statusToken(x.status || "")}">${esc(x.status || "–")}</span></td><td title="${esc(comment)}">${esc(comment.slice(0, 90)) || "–"}${comment.length > 90 ? "…" : ""}</td><td>${caseLinkHtml(x.caseLink)}</td></tr>`;
+    })
+    .join("");
+  return `<div style="overflow-x:auto;">${accountTable(headers, rows)}</div>`;
+}
 function accentClass(account) {
   return account === "Parfum Direct" ? "acc-pd" : account === "Parfum Store" ? "acc-ps" : "";
 }
@@ -915,6 +958,18 @@ const totalRevenue = revSummary.sum;
 const totalNewListings = newListings.length;
 const totalGpsrCases = gpsrCases.length;
 const totalPriorityEntries = gpsrPriority.length;
+const isDone = (x) => (x.status || "").toLowerCase() === "done";
+const violationsOpenList = violations.filter((x) => !isDone(x)).sort(byStatusThenDate);
+const blockedListings = newListings.filter((x) => (x.status || "").toLowerCase() === "blocked").sort(byStatusThenDate);
+const nlOtherOpenList = newListings.filter((x) => !isDone(x) && (x.status || "").toLowerCase() !== "blocked").sort(byStatusThenDate);
+const blockedByAccountNL = countBy(blockedListings, (x) => x.account || "Nicht zuordenbar (Quelle unvollständig)");
+const withLink = (arr) => arr.filter((x) => x.caseLink).length;
+// GPSR submission status per account (tabs "PD-New sumbission" / "PS-New submissions").
+const gpsrSubStatus = {};
+for (const acc of ["Parfum Direct", "Parfum Store"]) {
+  const rows = gpsrNewSubmissions.filter((x) => x.account === acc);
+  gpsrSubStatus[acc] = { total: rows.length, entries: sortedEntries(countBy(rows, (x) => x.submissionStatus || "(kein Status)")) };
+}
 const totalProhibited = prohibited.length;
 
 const html = `<!DOCTYPE html>
@@ -996,6 +1051,9 @@ code{ background:var(--panel-2); padding:2px 5px; border-radius:3px; font-family
 .tag.t-critical{ background:var(--critical-soft); color:var(--critical); }
 .tag.t-neutral{ background:var(--neutral-soft); color:var(--neutral); }
 .brand-table td{ white-space:nowrap; }
+.case-btn{ display:inline-block; font-size:.72rem; font-weight:600; text-decoration:none; color:var(--accent2); background:var(--accent2-soft); border:1px solid var(--accent2); border-radius:4px; padding:3px 9px; white-space:nowrap; }
+.case-btn:hover{ background:var(--accent2); color:var(--paper); }
+.case-btn .en{ font-size:.85em; }
 .coverage-note{ font-size:.8rem; color:var(--ink-soft); margin-top:10px; }
 select#nlDaysSelect{ font:inherit; font-family:var(--font-mono); background:var(--panel); border:1px solid var(--line-strong); border-radius:3px; padding:1px 6px; color:var(--ink); }
 footer{ color:var(--ink-faint); font-size:.75rem; margin-top:48px; }
@@ -1050,6 +1108,7 @@ summary .en{ font-size:.85em; margin-top:1px; font-weight:400; }
   <a href="#sec-overview">${bi("Überblick", "Overview")}</a>
   <a href="#sec-gpsr">${bi("GPSR-Compliance", "GPSR Compliance")}</a>
   <a href="#sec-violations">${bi("Account Violations", "Account Violations")}</a>
+  <a href="#sec-blocked">${bi("Blockierte Listings", "Blocked Listings")}</a>
   <a href="#sec-ingredients">${bi("Verbotene Inhaltsstoffe", "Prohibited Ingredients")}</a>
   <a href="#sec-brands">${bi("Markenfreigaben", "Brand Approvals")}</a>
   <a href="#sec-notes">${bi("Daten-Hinweise", "Data Notes")}</a>
@@ -1165,6 +1224,17 @@ ${accountTable(
 )}
 </details>
 </section>
+
+<section>
+<h2>${bi("GPSR-Priority-Einreichungen — Status", "GPSR priority submissions — status")}</h2>
+<p class="legend">${bi("Einreichungsstand der GPSR-Risiko-Listings, getrennt je Account (Tabs „PD-New sumbission“ / „PS-New submissions“).", "Submission status of the GPSR-risk listings, shown separately per account (tabs \"PD-New sumbission\" / \"PS-New submissions\").")}</p>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr));">
+${["Parfum Direct", "Parfum Store"].map((acc) => `<div class="card acc-card ${accentClass(acc)}">
+  <div class="acc-card-head"><span class="badge ${acc === "Parfum Direct" ? "pd" : "ps"}">${esc(acc)}</span> <span style="color:var(--ink-faint); font-size:.8rem;">${fmtInt(gpsrSubStatus[acc].total)} ${bi("Einreichungen", "submissions")}</span></div>
+  ${segBarHtml(gpsrSubStatus[acc].entries, gpsrSubStatus[acc].total)}
+</div>`).join("")}
+</div>
+</section>
 </div>
 
 <div class="group" id="sec-violations">
@@ -1184,6 +1254,31 @@ ${barHtml(sortedEntries(blockedByReason).slice(0, 10), blockedAsins.length)}
 ${segBarHtml(sortedEntries(violationsByStatus), violations.length)}
 <h3>${bi("Nach Typ", "By type")}</h3>
 ${barHtml(sortedEntries(violationsByType).slice(0, 10), violations.length)}
+<details class="pi-table">
+<summary>${bi(`Betroffene Produkte anzeigen (${fmtInt(violationsOpenList.length)} nicht erledigt, ${fmtInt(withLink(violationsOpenList))} mit Case-Link)`, `Show affected products (${fmtInt(violationsOpenList.length)} not done, ${fmtInt(withLink(violationsOpenList))} with case link)`)}</summary>
+<p class="legend">${bi("Alle Verstöße mit Status „open“ / „in progress“, offene zuerst. Erledigte Fälle sind ausgeblendet.", "All violations with status \"open\" / \"in progress\", open ones first. Completed cases are hidden.")}</p>
+${productTableHtml(violationsOpenList, { withType: true })}
+</details>
+</section>
+</div>
+
+<div class="group" id="sec-blocked">
+<p class="group-title">${bi("Blockierte Listings", "Blocked Listings")}</p>
+<section>
+<h2>${bi("Blockierte Listings", "Blocked listings")}</h2>
+<p class="legend">${bi("Listings mit Status „blocked“ aus „Bearbeitete Listings“ — kommen trotz Einreichung nicht live. Lifetime-Stand, nicht auf das 30-Tage-Fenster begrenzt.", "Listings with status \"blocked\" from \"Processed Listings\" — not going live despite submission. Lifetime view, not limited to the 30-day window.")}</p>
+<div class="grid">
+  <div class="card"><strong>${fmtInt(blockedListings.length)}</strong><div class="lbl">${bi("Blockierte Listings gesamt", "Blocked listings total")}</div><small>${sortedEntries(blockedByAccountNL).map(([k, v]) => `${esc(k)}: ${fmtInt(v)}`).join(" · ") || "–"}</small></div>
+  <div class="card"><strong>${fmtInt(withLink(blockedListings))}</strong><div class="lbl">${bi("davon mit Case-Link", "of which with case link")}</div></div>
+</div>
+<details class="pi-table" open>
+<summary>${bi(`Alle ${fmtInt(blockedListings.length)} blockierten Listings`, `All ${fmtInt(blockedListings.length)} blocked listings`)}</summary>
+${productTableHtml(blockedListings, { withType: false })}
+</details>
+<details class="pi-table">
+<summary>${bi(`Weitere offene Listings (${fmtInt(nlOtherOpenList.length)}: „open“ / „in progress“)`, `Other unfinished listings (${fmtInt(nlOtherOpenList.length)}: "open" / "in progress")`)}</summary>
+${productTableHtml(nlOtherOpenList, { withType: false })}
+</details>
 </section>
 </div>
 
