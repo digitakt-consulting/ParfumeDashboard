@@ -9,6 +9,12 @@ on:
     # time. Whichever attempt actually runs first does the refresh; the
     # "already refreshed today" guard below makes the other one a no-op
     # instead of a duplicate or a silent skip.
+    # 03:00/04:00 UTC are earlier on purpose: GitHub often starts scheduled
+    # runs hours late, so starting early makes it likely that one run lands
+    # close to 07:00 Berlin. 05:00/06:00 UTC are the exact 07:00 Berlin times
+    # (summer/winter).
+    - cron: "0 3 * * 1"
+    - cron: "0 4 * * 1"
     - cron: "0 5 * * 1"
     - cron: "0 6 * * 1"
   workflow_dispatch: {}
