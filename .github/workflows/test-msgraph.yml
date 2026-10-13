@@ -1,4 +1,4 @@
-name: Test Microsoft Graph connection
+﻿name: Test Microsoft Graph connection
 
 on:
   workflow_dispatch: {}
@@ -14,7 +14,7 @@ jobs:
           node-version: 20
 
       - name: Run connection test
-        run: node scripts/test-msgraph.js
+        run: node scripts/diag-links.js
         env:
           MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
