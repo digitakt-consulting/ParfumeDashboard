@@ -41,3 +41,10 @@ Deliberately removed (not in the SharePoint file): revenue, GPSR case log by mar
 - Replace any shared `meikerensen.github.io` links.
 - Note the client-secret expiry date and set a reminder.
 - Concept document (bilingual): https://claude.ai/artifact/5FxxtPN9uDzncACw6VSeFg
+
+## Case links & identifiers (verified 2026-10-13)
+
+- The "AMZ Case Link (wenn vorhanden)" columns are genuinely empty in the Excel file for ~95% of rows (New Listings 26/1188, Account Violations 41/575, blocked listings 8/257). Checked against Graph `values` AND `formulas`: no HYPERLINK formulas, no hidden text - it is not a parsing bug. Fix is in the data (team fills the column); the dashboard shows the coverage per table.
+- Rows without case link get a "In Seller Central suchen" fallback (product search by ASIN, else EAN). `sellerCentralSearchUrl()` / `productKey()` in generate.js.
+- 238 of 257 blocked listings have **no ASIN** (only an EAN, 8-14 digits) - so ASIN-only logic leaves them without any identifier. The tables show `EAN <number>` when the ASIN is missing.
+- The header chip also shows the SharePoint file's real last-edit time (`lastModifiedDateTime` of the driveItem, via `loadWorkbookFromShareLink().lastModified`).

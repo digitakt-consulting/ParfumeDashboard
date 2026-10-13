@@ -857,10 +857,20 @@ function brandStatusBarHtml(entries, total) {
 // stays the primary button, but rows without one get a Seller Central product
 // search for the ASIN as fallback (same URL pattern the team already pastes
 // into the sheet), clearly labelled as a search, not a case.
+// Second root cause: ~93% of the blocked listings (238 of 257) have NO ASIN in
+// the sheet - they are identified by EAN only (listed/blocked or barcode not
+// yet known to Amazon). The EAN is therefore shown and searched when the ASIN
+// is missing; Seller Central's product search accepts both.
+function productKey(item) {
+  if (item.asin) return item.asin;
+  const ean = String(item.ean || "").trim();
+  return /^\d{8,14}$/.test(ean) ? ean : null;
+}
 function sellerCentralSearchUrl(item) {
-  if (!item.asin || !/^[A-Z0-9]{10}$/i.test(item.asin)) return null;
+  const key = productKey(item);
+  if (!key) return null;
   const host = /^(UK|GB)$/i.test((item.country || "").trim()) ? "sellercentral.amazon.co.uk" : "sellercentral-europe.amazon.com";
-  return `https://${host}/product-search/search?q=${encodeURIComponent(item.asin.toUpperCase())}`;
+  return `https://${host}/product-search/search?q=${encodeURIComponent(key)}`;
 }
 // "In Seller Central öffnen" button when the source row carries a case link;
 // else the ASIN-search fallback; else an explicit "no link" marker (never an
@@ -868,7 +878,7 @@ function sellerCentralSearchUrl(item) {
 function caseLinkHtml(item) {
   if (item.caseLink) return `<a class="case-btn" href="${esc(item.caseLink)}" target="_blank" rel="noopener noreferrer">${bi("Case öffnen", "Open case")}</a>`;
   const search = sellerCentralSearchUrl(item);
-  if (search) return `<a class="case-btn case-btn-search" href="${esc(search)}" target="_blank" rel="noopener noreferrer" title="Kein Case-Link in der Excel-Datei – öffnet die Produktsuche für diese ASIN / No case link in the Excel file – opens the product search for this ASIN">${bi("ASIN suchen", "Search ASIN")}</a>`;
+  if (search) return `<a class="case-btn case-btn-search" href="${esc(search)}" target="_blank" rel="noopener noreferrer" title="Kein Case-Link in der Excel-Datei – öffnet die Produktsuche für diese ASIN/EAN / No case link in the Excel file – opens the product search for this ASIN/EAN">${bi("In Seller Central suchen", "Search in Seller Central")}</a>`;
   return `<span style="color:var(--ink-faint);">${bi("kein Link hinterlegt", "no link on file")}</span>`;
 }
 // Coverage line shown above each product table so the data gap is visible
@@ -878,8 +888,8 @@ function linkCoverageHtml(items) {
   const searchOnly = items.filter((x) => !x.caseLink && sellerCentralSearchUrl(x)).length;
   const none = items.length - withCase - searchOnly;
   return `<p class="coverage-note">${bi(
-    `Case-Link in der Excel-Datei: ${fmtInt(withCase)} von ${fmtInt(items.length)} Zeilen. Für ${fmtInt(searchOnly)} weitere Zeilen führt „ASIN suchen“ zur Produktsuche in Seller Central${none ? `; ${fmtInt(none)} Zeilen ohne ASIN und ohne Link` : ""}. Fehlende Case-Links bitte in der Spalte „AMZ Case Link“ nachtragen.`,
-    `Case link in the Excel file: ${fmtInt(withCase)} of ${fmtInt(items.length)} rows. For ${fmtInt(searchOnly)} more rows "Search ASIN" opens the Seller Central product search${none ? `; ${fmtInt(none)} rows have neither ASIN nor link` : ""}. Please add missing case links in the "AMZ Case Link" column.`
+    `Case-Link in der Excel-Datei: ${fmtInt(withCase)} von ${fmtInt(items.length)} Zeilen. Für ${fmtInt(searchOnly)} weitere Zeilen führt „In Seller Central suchen“ zur Produktsuche (per ASIN, sonst EAN)${none ? `; ${fmtInt(none)} Zeilen ohne ASIN, EAN und Link` : ""}. Fehlende Case-Links bitte in der Spalte „AMZ Case Link“ nachtragen.`,
+    `Case link in the Excel file: ${fmtInt(withCase)} of ${fmtInt(items.length)} rows. For ${fmtInt(searchOnly)} more rows "Search in Seller Central" opens the product search (by ASIN, else EAN)${none ? `; ${fmtInt(none)} rows have no ASIN, EAN or link` : ""}. Please add missing case links in the "AMZ Case Link" column.`
   )}</p>`;
 }
 function accountBadgeHtml(account) {
@@ -897,13 +907,13 @@ function byStatusThenDate(a, b) {
 // Affected-products table for one area. `cols` picks the optional "type" column
 // (violations only); the comment is clipped for readability, full text on hover.
 function productTableHtml(items, { withType }) {
-  const headers = [["Account", "Account"], ["Land", "Country"], ["Datum", "Date"], ["ASIN", "ASIN"], ["Produkt", "Product"]];
+  const headers = [["Account", "Account"], ["Land", "Country"], ["Datum", "Date"], ["ASIN / EAN", "ASIN / EAN"], ["Produkt", "Product"]];
   if (withType) headers.push(["Typ", "Type"]);
   headers.push(["Status", "Status"], ["Kommentar", "Comment"], ["Seller Central", "Seller Central"]);
   const rows = items
     .map((x) => {
       const comment = x.comment || "";
-      return `<tr class="${accentClass(x.account)}"><td>${accountBadgeHtml(x.account)}</td><td>${esc(x.country || "–")}</td><td>${esc(x.date || "–")}</td><td>${esc(x.asin || "–")}</td><td>${esc((x.product || "–").slice(0, 70))}</td>${withType ? `<td>${esc((x.type || "–").slice(0, 60))}</td>` : ""}<td><span class="tag t-${statusToken(x.status || "")}">${esc(x.status || "–")}</span></td><td title="${esc(comment)}">${esc(comment.slice(0, 90)) || "–"}${comment.length > 90 ? "…" : ""}</td><td>${caseLinkHtml(x)}</td></tr>`;
+      return `<tr class="${accentClass(x.account)}"><td>${accountBadgeHtml(x.account)}</td><td>${esc(x.country || "–")}</td><td>${esc(x.date || "–")}</td><td>${esc(x.asin || (productKey(x) ? `EAN ${productKey(x)}` : "–"))}</td><td>${esc((x.product || "–").slice(0, 70))}</td>${withType ? `<td>${esc((x.type || "–").slice(0, 60))}</td>` : ""}<td><span class="tag t-${statusToken(x.status || "")}">${esc(x.status || "–")}</span></td><td title="${esc(comment)}">${esc(comment.slice(0, 90)) || "–"}${comment.length > 90 ? "…" : ""}</td><td>${caseLinkHtml(x)}</td></tr>`;
     })
     .join("");
   return `${linkCoverageHtml(items)}<div style="overflow-x:auto;">${accountTable(headers, rows)}</div>`;
