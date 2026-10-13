@@ -851,12 +851,36 @@ function brandStatusBarHtml(entries, total) {
     .join("");
   return `<div class="seg-bar">${segs}</div><div class="seg-legend">${legend}</div>`;
 }
-// "In Seller Central öffnen" button when the source row carries a case link,
-// otherwise an explicit "no link" marker (never an empty cell that could be
-// mistaken for a rendering bug).
-function caseLinkHtml(url) {
-  if (!url) return `<span style="color:var(--ink-faint);">${bi("kein Link hinterlegt", "no link on file")}</span>`;
-  return `<a class="case-btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${bi("In Seller Central öffnen", "Open in Seller Central")}</a>`;
+// Root cause of the "no link" wall: the "AMZ Case Link (wenn vorhanden)" columns
+// are genuinely empty in the SharePoint file for ~95% of rows (verified against
+// the raw cell values AND formulas - no hidden hyperlinks). So the case link
+// stays the primary button, but rows without one get a Seller Central product
+// search for the ASIN as fallback (same URL pattern the team already pastes
+// into the sheet), clearly labelled as a search, not a case.
+function sellerCentralSearchUrl(item) {
+  if (!item.asin || !/^[A-Z0-9]{10}$/i.test(item.asin)) return null;
+  const host = /^(UK|GB)$/i.test((item.country || "").trim()) ? "sellercentral.amazon.co.uk" : "sellercentral-europe.amazon.com";
+  return `https://${host}/product-search/search?q=${encodeURIComponent(item.asin.toUpperCase())}`;
+}
+// "In Seller Central öffnen" button when the source row carries a case link;
+// else the ASIN-search fallback; else an explicit "no link" marker (never an
+// empty cell that could be mistaken for a rendering bug).
+function caseLinkHtml(item) {
+  if (item.caseLink) return `<a class="case-btn" href="${esc(item.caseLink)}" target="_blank" rel="noopener noreferrer">${bi("Case öffnen", "Open case")}</a>`;
+  const search = sellerCentralSearchUrl(item);
+  if (search) return `<a class="case-btn case-btn-search" href="${esc(search)}" target="_blank" rel="noopener noreferrer" title="Kein Case-Link in der Excel-Datei – öffnet die Produktsuche für diese ASIN / No case link in the Excel file – opens the product search for this ASIN">${bi("ASIN suchen", "Search ASIN")}</a>`;
+  return `<span style="color:var(--ink-faint);">${bi("kein Link hinterlegt", "no link on file")}</span>`;
+}
+// Coverage line shown above each product table so the data gap is visible
+// (and attributable to the source file) instead of looking like a bug.
+function linkCoverageHtml(items) {
+  const withCase = items.filter((x) => x.caseLink).length;
+  const searchOnly = items.filter((x) => !x.caseLink && sellerCentralSearchUrl(x)).length;
+  const none = items.length - withCase - searchOnly;
+  return `<p class="coverage-note">${bi(
+    `Case-Link in der Excel-Datei: ${fmtInt(withCase)} von ${fmtInt(items.length)} Zeilen. Für ${fmtInt(searchOnly)} weitere Zeilen führt „ASIN suchen“ zur Produktsuche in Seller Central${none ? `; ${fmtInt(none)} Zeilen ohne ASIN und ohne Link` : ""}. Fehlende Case-Links bitte in der Spalte „AMZ Case Link“ nachtragen.`,
+    `Case link in the Excel file: ${fmtInt(withCase)} of ${fmtInt(items.length)} rows. For ${fmtInt(searchOnly)} more rows "Search ASIN" opens the Seller Central product search${none ? `; ${fmtInt(none)} rows have neither ASIN nor link` : ""}. Please add missing case links in the "AMZ Case Link" column.`
+  )}</p>`;
 }
 function accountBadgeHtml(account) {
   if (account === "Parfum Direct") return `<span class="badge pd">Parfum Direct</span>`;
@@ -879,10 +903,10 @@ function productTableHtml(items, { withType }) {
   const rows = items
     .map((x) => {
       const comment = x.comment || "";
-      return `<tr class="${accentClass(x.account)}"><td>${accountBadgeHtml(x.account)}</td><td>${esc(x.country || "–")}</td><td>${esc(x.date || "–")}</td><td>${esc(x.asin || "–")}</td><td>${esc((x.product || "–").slice(0, 70))}</td>${withType ? `<td>${esc((x.type || "–").slice(0, 60))}</td>` : ""}<td><span class="tag t-${statusToken(x.status || "")}">${esc(x.status || "–")}</span></td><td title="${esc(comment)}">${esc(comment.slice(0, 90)) || "–"}${comment.length > 90 ? "…" : ""}</td><td>${caseLinkHtml(x.caseLink)}</td></tr>`;
+      return `<tr class="${accentClass(x.account)}"><td>${accountBadgeHtml(x.account)}</td><td>${esc(x.country || "–")}</td><td>${esc(x.date || "–")}</td><td>${esc(x.asin || "–")}</td><td>${esc((x.product || "–").slice(0, 70))}</td>${withType ? `<td>${esc((x.type || "–").slice(0, 60))}</td>` : ""}<td><span class="tag t-${statusToken(x.status || "")}">${esc(x.status || "–")}</span></td><td title="${esc(comment)}">${esc(comment.slice(0, 90)) || "–"}${comment.length > 90 ? "…" : ""}</td><td>${caseLinkHtml(x)}</td></tr>`;
     })
     .join("");
-  return `<div style="overflow-x:auto;">${accountTable(headers, rows)}</div>`;
+  return `${linkCoverageHtml(items)}<div style="overflow-x:auto;">${accountTable(headers, rows)}</div>`;
 }
 function accentClass(account) {
   return account === "Parfum Direct" ? "acc-pd" : account === "Parfum Store" ? "acc-ps" : "";
@@ -953,6 +977,16 @@ function chartLegend(series) {
     .map((s) => `<span><i style="background:${s.color};"></i>${esc(s.name)}</span>`)
     .join("")}</div>`;
 }
+
+// Real last-edit time of the SharePoint file (item 05): the "Stand" date only
+// says when the page was built, not whether the Excel data is fresh.
+const fileEditedChipHtml = (() => {
+  if (!rawWb.lastModified) return "";
+  const d = new Date(rawWb.lastModified);
+  if (isNaN(d)) return "";
+  const fmt = (loc) => d.toLocaleString(loc, { timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return `<span class="en" style="display:block; font-style:normal; margin-top:2px;">${esc(`Excel zuletzt bearbeitet: ${fmt("de-DE")} Uhr`)}</span><span class="en">${esc(`Excel last edited: ${fmt("en-GB")} (Berlin)`)}</span>`;
+})();
 
 const totalRevenue = revSummary.sum;
 const totalNewListings = newListings.length;
@@ -1054,6 +1088,8 @@ code{ background:var(--panel-2); padding:2px 5px; border-radius:3px; font-family
 .case-btn{ display:inline-block; font-size:.72rem; font-weight:600; text-decoration:none; color:var(--accent2); background:var(--accent2-soft); border:1px solid var(--accent2); border-radius:4px; padding:3px 9px; white-space:nowrap; }
 .case-btn:hover{ background:var(--accent2); color:var(--paper); }
 .case-btn .en{ font-size:.85em; }
+.case-btn-search{ color:var(--ink-soft); background:var(--panel-2); border-color:var(--line-strong); font-weight:500; }
+.case-btn-search:hover{ background:var(--ink-soft); color:var(--paper); }
 .coverage-note{ font-size:.8rem; color:var(--ink-soft); margin-top:10px; }
 select#nlDaysSelect{ font:inherit; font-family:var(--font-mono); background:var(--panel); border:1px solid var(--line-strong); border-radius:3px; padding:1px 6px; color:var(--ink); }
 footer{ color:var(--ink-faint); font-size:.75rem; margin-top:48px; }
@@ -1098,7 +1134,7 @@ summary .en{ font-size:.85em; margin-top:1px; font-weight:400; }
 <div class="wrap">
 <header class="top">
   <h1>Parfum Compliance Dashboard<span class="en">Parfum Compliance Dashboard</span></h1>
-  <span class="stand-chip" id="standChip">${bi(`Stand: ${SNAPSHOT_ISO}`, `As of: ${SNAPSHOT_ISO}`)}</span>
+  <span class="stand-chip" id="standChip">${bi(`Stand: ${SNAPSHOT_ISO}`, `As of: ${SNAPSHOT_ISO}`)}${fileEditedChipHtml}</span>
 </header>
 <p class="sub">${bi(
   `Generiert aus der wöchentlich gepflegten Datei Recent_ExcelListSummarized.xlsx (SharePoint). Alle Zeitfenster (7–90 Tage) rechnen relativ zum eingefrorenen Stand oben, nicht zur Uhrzeit beim Betrachten.`,
