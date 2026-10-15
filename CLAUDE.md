@@ -1,4 +1,4 @@
-# Parfum Compliance Dashboard — Developer Reference / Entwicklerreferenz
+﻿# Parfum Compliance Dashboard — Developer Reference / Entwicklerreferenz
 
 Status: 2026-09-21. Repo: `digitakt-consulting/ParfumeDashboard` (moved from `meikerensen/DraftParfuemKunde`).
 Live: https://digitakt-consulting.github.io/ParfumeDashboard/ (the old `meikerensen.github.io` URL no longer works).
@@ -44,7 +44,7 @@ Deliberately removed (not in the SharePoint file): revenue, GPSR case log by mar
 
 ## Case links & identifiers (verified 2026-10-13)
 
-- The "AMZ Case Link (wenn vorhanden)" columns are genuinely empty in the Excel file for ~95% of rows (New Listings 26/1188, Account Violations 41/575, blocked listings 8/257). Checked against Graph `values` AND `formulas`: no HYPERLINK formulas, no hidden text - it is not a parsing bug. Fix is in the data (team fills the column); the dashboard shows the coverage per table.
-- Rows without case link get a "In Seller Central suchen" fallback (product search by ASIN, else EAN). `sellerCentralSearchUrl()` / `productKey()` in generate.js.
+- The "AMZ Case Link (wenn vorhanden)" columns are genuinely empty in the Excel file for ~95% of rows (New Listings 26/1188, Account Violations 41/575, blocked listings 8/257). Checked against Graph `values` AND `formulas`: no HYPERLINK formulas, no hidden text - it is not a parsing bug. Per the team, an empty cell means no Amazon case exists for that row - the dashboard says so ("Kein Amazon-Case vorhanden") and shows the coverage per table.
+- Rows without case link get a "Produkt in Seller Central suchen" fallback (product search by ASIN, else EAN). `sellerCentralSearchUrl()` / `productKey()` in generate.js.
 - 238 of 257 blocked listings have **no ASIN** (only an EAN, 8-14 digits) - so ASIN-only logic leaves them without any identifier. The tables show `EAN <number>` when the ASIN is missing.
 - The header chip also shows the SharePoint file's real last-edit time (`lastModifiedDateTime` of the driveItem, via `loadWorkbookFromShareLink().lastModified`).

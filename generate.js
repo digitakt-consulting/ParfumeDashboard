@@ -877,9 +877,11 @@ function sellerCentralSearchUrl(item) {
 // empty cell that could be mistaken for a rendering bug).
 function caseLinkHtml(item) {
   if (item.caseLink) return `<a class="case-btn" href="${esc(item.caseLink)}" target="_blank" rel="noopener noreferrer">${bi("Case öffnen", "Open case")}</a>`;
+  // Per the team: an empty "AMZ Case Link (wenn vorhanden)" cell means no Amazon case exists for this row.
   const search = sellerCentralSearchUrl(item);
-  if (search) return `<a class="case-btn case-btn-search" href="${esc(search)}" target="_blank" rel="noopener noreferrer" title="Kein Case-Link in der Excel-Datei – öffnet die Produktsuche für diese ASIN/EAN / No case link in the Excel file – opens the product search for this ASIN/EAN">${bi("In Seller Central suchen", "Search in Seller Central")}</a>`;
-  return `<span style="color:var(--ink-faint);">${bi("kein Link hinterlegt", "no link on file")}</span>`;
+  const noCase = `<div style="color:var(--ink-faint);">${bi("Kein Amazon-Case vorhanden", "No Amazon case exists")}</div>`;
+  if (search) return `${noCase}<a class="case-btn case-btn-search" href="${esc(search)}" target="_blank" rel="noopener noreferrer" title="Öffnet die Produktsuche für diese ASIN/EAN / Opens the product search for this ASIN/EAN">${bi("Produkt in Seller Central suchen", "Search product in Seller Central")}</a>`;
+  return noCase;
 }
 // Coverage line shown above each product table so the data gap is visible
 // (and attributable to the source file) instead of looking like a bug.
@@ -888,8 +890,8 @@ function linkCoverageHtml(items) {
   const searchOnly = items.filter((x) => !x.caseLink && sellerCentralSearchUrl(x)).length;
   const none = items.length - withCase - searchOnly;
   return `<p class="coverage-note">${bi(
-    `Case-Link in der Excel-Datei: ${fmtInt(withCase)} von ${fmtInt(items.length)} Zeilen. Für ${fmtInt(searchOnly)} weitere Zeilen führt „In Seller Central suchen“ zur Produktsuche (per ASIN, sonst EAN)${none ? `; ${fmtInt(none)} Zeilen ohne ASIN, EAN und Link` : ""}. Fehlende Case-Links bitte in der Spalte „AMZ Case Link“ nachtragen.`,
-    `Case link in the Excel file: ${fmtInt(withCase)} of ${fmtInt(items.length)} rows. For ${fmtInt(searchOnly)} more rows "Search in Seller Central" opens the product search (by ASIN, else EAN)${none ? `; ${fmtInt(none)} rows have no ASIN, EAN or link` : ""}. Please add missing case links in the "AMZ Case Link" column.`
+    `Ein leeres Feld in der Spalte „AMZ Case Link (wenn vorhanden)“ bedeutet: Zu dieser Zeile existiert kein Amazon-Case. Mit Case-Link: ${fmtInt(withCase)} von ${fmtInt(items.length)} Zeilen. Für die übrigen Zeilen führt „Produkt in Seller Central suchen“ zur Produktsuche (per ASIN, sonst EAN)${none ? `; bei ${fmtInt(none)} Zeilen fehlen ASIN und EAN` : ""}.`,
+    `An empty "AMZ Case Link (wenn vorhanden)" cell means no Amazon case exists for that row. With case link: ${fmtInt(withCase)} of ${fmtInt(items.length)} rows. For the other rows "Search product in Seller Central" opens the product search (by ASIN, else EAN)${none ? `; ${fmtInt(none)} rows have no ASIN or EAN` : ""}.`
   )}</p>`;
 }
 function accountBadgeHtml(account) {
