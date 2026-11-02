@@ -53,13 +53,9 @@ jobs:
         with:
           node-version: 20
 
-      - name: Generate dashboard from SharePoint
+      - name: Generate dashboard from Google Sheet
         if: steps.guard.outputs.go == 'true'
         run: node generate.js
-        env:
-          MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
-          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
-          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
 
       - name: Publish index.html if it changed
         if: steps.guard.outputs.go == 'true'

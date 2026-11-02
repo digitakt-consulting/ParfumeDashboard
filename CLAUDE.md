@@ -48,3 +48,6 @@ Deliberately removed (not in the SharePoint file): revenue, GPSR case log by mar
 - Rows without case link get a "Produkt in Seller Central suchen" fallback (product search by ASIN, else EAN). `sellerCentralSearchUrl()` / `productKey()` in generate.js.
 - 238 of 257 blocked listings have **no ASIN** (only an EAN, 8-14 digits) - so ASIN-only logic leaves them without any identifier. The tables show `EAN <number>` when the ASIN is missing.
 - The header chip also shows the SharePoint file's real last-edit time (`lastModifiedDateTime` of the driveItem, via `loadWorkbookFromShareLink().lastModified`).
+
+## Datenquelle seit 2026-11-02: Google Sheet
+`generate.js` liest das Google Sheet `Recent_ExcelListSummarized` (ID in `GOOGLE_SHEET_ID`) über die öffentlichen CSV-Exporte pro Tab (`lib/gsheet-lite.js`, keine Zugangsdaten). Voraussetzung: Freigabe "Jeder mit dem Link kann ansehen". Datumszellen kommen als Anzeigetext ("2.11", "14.12.2024"), nicht als Excel-Seriennummer; `parseFlexibleDate` liest sie als TT.MM. Das Sheet liefert keine "zuletzt bearbeitet"-Zeit, der Chip entfällt. Die SharePoint-Anbindung (`lib/msgraph-lite.js`, `lib/ms-auth.js`) bleibt für die Test-Workflows im Repo. Der Tab "1. Account Health Score" (Flag-Log mit US-Datum MM.TT.JJJJ) wird gelesen, aber nicht angezeigt.
